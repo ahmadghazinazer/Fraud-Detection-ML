@@ -96,10 +96,19 @@ async def upload_file(file: UploadFile = File(...)):
         # Read the CSV into a pandas dataframe
         df = pd.read_csv(io.BytesIO(contents))
         
-        # Verify required columns exist
+        # 1. Validation: Verify required columns exist
         required_cols = ['amount', 'time', 'v1', 'v2', 'v3']
-        if not all(col in df.columns for col in required_cols):
-            raise HTTPException(status_code=400, detail=f"CSV must contain columns: {', '.join(required_cols)}")
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            raise HTTPException(status_code=400, detail=f"Invalid CSV Schema. Missing columns: {', '.join(missing_cols)}")
+            
+        # 2. Validation: Check for entirely empty dataset
+        if len(df) == 0:
+            raise HTTPException(status_code=400, detail="The uploaded CSV file is empty.")
+            
+        # 3. Validation: Handle NaN or infinite values
+        if df[required_cols].isnull().values.any():
+            df = df.fillna(0) # Simple imputation for dashboard stability
             
         features = df[required_cols].values
         
@@ -112,19 +121,35 @@ async def upload_file(file: UploadFile = File(...)):
         fraud_count = 0
         
         for i in range(len(df)):
-            is_fraud = bool(rf_probs[i] > 0.5)
-            is_anomaly = bool(if_scores[i] < 0)
+            is_rf_fraud = bool(rf_probs[i] > 0.5)
+            # Isolation forest outputs negative for anomalies
+            is_if_anomaly = bool(if_scores[i] < 0) 
             
-            if is_fraud or is_anomaly:
+            is_fraud = is_rf_fraud or is_if_anomaly
+            
+            if is_fraud:
                 fraud_count += 1
                 
+            # Determine exactly WHICH model flagged it for the UI
+            flagged_by = []
+            if is_rf_fraud:
+                flagged_by.append("Random Forest")
+            if is_if_anomaly:
+                flagged_by.append("Isolation Forest")
+            
+            model_confidence = round(float(rf_probs[i] * 100), 2)
+            if is_if_anomaly and not is_rf_fraud:
+                # If only Isolation Forest caught it, use a mock confidence based on score severity 
+                model_confidence = min(99.9, round(float(abs(if_scores[i]) * 100), 2) + 50)
+                
             results.append({
-                "row_index": i,
+                "row_index": i + 1,
                 "amount": float(df.iloc[i]['amount']),
                 "time": float(df.iloc[i]['time']),
                 "is_fraud": is_fraud,
-                "risk_score": round(float(rf_probs[i] * 100), 2),
-                "red_flag": is_anomaly
+                "risk_score": model_confidence,
+                "red_flag": is_if_anomaly,
+                "flagged_by": ", ".join(flagged_by) if flagged_by else "None"
             })
             
         return {
@@ -134,5 +159,9 @@ async def upload_file(file: UploadFile = File(...)):
             "safe_detected": len(df) - fraud_count,
             "transactions": results
         }
+    except pd.errors.EmptyDataError:
+        raise HTTPException(status_code=400, detail="The file is empty or cannot be parsed as a CSV.")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Server ML Processing Error: {str(e)}")
