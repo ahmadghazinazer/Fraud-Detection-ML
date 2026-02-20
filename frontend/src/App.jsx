@@ -54,6 +54,70 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFileUpload(e.dataTransfer.files[0]);
+    }
+  };
+
+  const handleFileSelect = (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      handleFileUpload(e.target.files[0]);
+    }
+  };
+
+  const handleFileUpload = async (file) => {
+    if (!file.name.endsWith('.csv')) {
+      alert('Please upload a CSV file.');
+      return;
+    }
+
+    setUploadStatus('uploading');
+    setUploadResults(null);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await fetch('http://127.0.0.1:8000/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error('Upload failed');
+      }
+
+      const data = await response.json();
+      setUploadResults(data);
+      setUploadStatus('success');
+
+      // Update global stats based on upload
+      setStats(prev => ({
+        ...prev,
+        total: prev.total + data.total_rows,
+        fraud: prev.fraud + data.fraud_detected
+      }));
+
+    } catch (error) {
+      console.error('Error uploading file:', error);
+      setUploadStatus('error');
+    }
+  };
+
   return (
     <div className="dashboard-container">
       <header>
